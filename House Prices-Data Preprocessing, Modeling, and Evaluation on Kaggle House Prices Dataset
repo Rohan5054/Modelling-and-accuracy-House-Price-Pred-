@@ -1,0 +1,245 @@
+# 1. Imports and Setup
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+from sklearn.model_selection import train_test_split, GridSearchCV, RandomizedSearchCV, cross_val_score
+from sklearn.preprocessing import StandardScaler, LabelEncoder
+from sklearn.impute import SimpleImputer
+from sklearn.metrics import (mean_squared_error, mean_absolute_error, r2_score,
+                             accuracy_score, confusion_matrix, precision_score, recall_score, f1_score, roc_auc_score)
+
+from sklearn.linear_model import LinearRegression, Ridge, Lasso, ElasticNet, LogisticRegression
+from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor, BaggingRegressor, AdaBoostRegressor, StackingRegressor
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.svm import SVR, SVC
+from sklearn.naive_bayes import GaussianNB
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor # Added DecisionTreeRegressor
+
+from sklearn.decomposition import PCA
+from sklearn.discriminant_analysis import LinearDiscriminantAnalysis as LDA
+from sklearn.manifold import TSNE
+
+from sklearn.cluster import KMeans, DBSCAN, AgglomerativeClustering
+from sklearn.mixture import GaussianMixture
+
+import scipy.stats as stats
+
+
+# 2. Load Data
+df = pd.read_csv('/kaggle/input/house-prices-advanced-regression-techniques/train.csv')
+
+# Drop ID column if present
+if 'Id' in df.columns:
+    df.drop('Id', axis=1, inplace=True)
+
+# Separate target variable
+y = df['SalePrice']
+df.drop('SalePrice', axis=1, inplace=True)
+
+
+# 3. Preprocessing
+num_cols = df.select_dtypes(include=['int64', 'float64']).columns.tolist()
+cat_cols = df.select_dtypes(include=['object']).columns.tolist()
+
+# Fill missing values for numeric columns with median
+df[num_cols] = df[num_cols].fillna(df[num_cols].median())
+
+# Fill missing values for categorical columns with mode
+df[cat_cols] = df[cat_cols].fillna(df[cat_cols].mode().iloc[0])
+
+# Convert all categorical columns to string (just in case any are wrongly typed)
+# This line is kept as the single, necessary conversion before one-hot encoding.
+df[cat_cols] = df[cat_cols].astype(str)
+
+# Encode categorical features using one-hot encoding
+# The redundant df[cat_cols] = df[cat_cols].astype(str) line has been removed.
+# Apply one-hot encoding
+df = pd.get_dummies(df, columns=cat_cols, drop_first=True)
+
+# FINAL SAFETY CHECK: drop any leftover non-numeric columns (in case of unseen categorical artifacts)
+df = df.select_dtypes(include=[np.number])
+
+# Scale features
+scaler = StandardScaler()
+X_scaled = scaler.fit_transform(df)
+
+
+# 4. Train-Test Split
+X_train, X_test, y_train, y_test = train_test_split(X_scaled, y, test_size=0.2, random_state=42)
+
+
+# 5. Regression Models
+
+# Bagging Regressor
+# Changed estimator from DecisionTreeClassifier to DecisionTreeRegressor for regression task
+bagging_model = BaggingRegressor(estimator=DecisionTreeRegressor(), n_estimators=10, random_state=42)
+bagging_model.fit(X_train, y_train)
+y_pred_bag = bagging_model.predict(X_test)
+print("---BaggingRegressor---")
+print("R2 Score:", r2_score(y_test, y_pred_bag))
+print("RMSE:", mean_squared_error(y_test, y_pred_bag, squared=False))
+
+# Stacking Regressor
+estimators = [
+    ('ridge', Ridge()),
+    ('rf', RandomForestRegressor(n_estimators=100, random_state=42))
+]
+stacking_model = StackingRegressor(estimators=estimators, final_estimator=GradientBoostingRegressor())
+stacking_model.fit(X_train, y_train)
+y_pred_stack = stacking_model.predict(X_test)
+print("---Stacking Regressor---")
+print("R2 Score:", r2_score(y_test, y_pred_stack))
+print("RMSE:", mean_squared_error(y_test, y_pred_stack, squared=False))
+
+# SVR Tuning and Prediction
+print("---Tuning SVR---")
+param_grid_svr = {
+    'kernel': ['rbf'], # Start with 'rbf' as it's often effective, or try ['linear', 'rbf', 'poly']
+    'C': [0.1, 1, 10, 100],
+    'epsilon': [0.01, 0.1, 0.5],
+    'gamma': ['scale', 'auto'] # 'scale' uses 1 / (n_features * X.var())
+}
+svr_tuned_model = GridSearchCV(SVR(), param_grid_svr, cv=3, scoring='r2', n_jobs=-1, verbose=1)
+svr_tuned_model.fit(X_train, y_train)
+y_pred_svr_tuned = svr_tuned_model.predict(X_test)
+print("Best SVR Params:", svr_tuned_model.best_params_)
+print("---Tuned SVR---")
+print("R2 Score:", r2_score(y_test, y_pred_svr_tuned))
+print("RMSE:", mean_squared_error(y_test, y_pred_svr_tuned, squared=False))
+
+models = {
+    'LinearRegression': LinearRegression(),
+    'Ridge': Ridge(),
+    'Lasso': Lasso(max_iter=10000),
+    'ElasticNet': ElasticNet(max_iter=10000),
+    'RandomForest': RandomForestRegressor(),
+    'GradientBoosting': GradientBoostingRegressor(),
+    # 'SVR': SVR() # Removed the untuned SVR
+}
+
+# Loop through other models
+for name, model in models.items():
+    model.fit(X_train, y_train)
+    y_pred = model.predict(X_test)
+    print(f"---{name}---")
+    print("R2 Score:", r2_score(y_test, y_pred))
+    print("RMSE:", mean_squared_error(y_test, y_pred, squared=False))
+
+
+# 6. Analyze and Select Best Model
+results = []
+
+for name, model in models.items():
+    model.fit(X_train, y_train) # Re-fit to ensure all models are trained
+    y_pred = model.predict(X_test)
+    r2 = r2_score(y_test, y_pred)
+    rmse = mean_squared_error(y_test, y_pred, squared=False)
+    results.append({'Model': name, 'R2 Score': r2, 'RMSE': rmse})
+
+# Add Bagging, Stacking, and Tuned SVR to results
+results.append({'Model': 'BaggingRegressor', 'R2 Score': r2_score(y_test, y_pred_bag), 'RMSE': mean_squared_error(y_test, y_pred_bag, squared=False)})
+results.append({'Model': 'StackingRegressor', 'R2 Score': r2_score(y_test, y_pred_stack), 'RMSE': mean_squared_error(y_test, y_pred_stack, squared=False)})
+results.append({'Model': 'Tuned SVR', 'R2 Score': r2_score(y_test, y_pred_svr_tuned), 'RMSE': mean_squared_error(y_test, y_pred_svr_tuned, squared=False)})
+
+# Create DataFrame and display sorted results
+results_df = pd.DataFrame(results).sort_values(by='R2 Score', ascending=False)
+print("--- Model Comparison ---")
+print(results_df)
+
+# Print best model clearly
+best_model = results_df.iloc[0]
+print(f"    Best Model: {best_model['Model']}")
+print(f"    R2 Score: {best_model['R2 Score']:.4f}")
+print(f"    RMSE: {best_model['RMSE']:.2f}")
+
+
+# 7. Hyperparameter Tuning (General Section)
+print("\n--- General Hyperparameter Tuning Examples ---")
+
+# RandomForestRegressor Tuning
+param_grid_rf = {
+    'n_estimators': [100, 200],
+    'max_depth': [10, 20, None]
+}
+rf = RandomForestRegressor()
+grid_search_rf = GridSearchCV(rf, param_grid_rf, cv=3, scoring='r2', n_jobs=-1, verbose=1)
+grid_search_rf.fit(X_train, y_train)
+print("Best RF Params (from general tuning section):", grid_search_rf.best_params_)
+
+
+# 8. Classification (Binarize Target)
+# Convert price into high (1) or low (0) based on median
+median_price = y.median()
+y_class = (y > median_price).astype(int)
+X_train_cls, X_test_cls, y_train_cls, y_test_cls = train_test_split(X_scaled, y_class, test_size=0.2, random_state=42)
+
+classifiers = {
+    'LogisticRegression': LogisticRegression(max_iter=1000),
+    'RandomForestClassifier': RandomForestClassifier(),
+    'KNN': KNeighborsClassifier(),
+    'NaiveBayes': GaussianNB(),
+    'SVC': SVC()
+}
+
+for name, clf in classifiers.items():
+    clf.fit(X_train_cls, y_train_cls)
+    y_pred_cls = clf.predict(X_test_cls)
+    print(f"---{name}---")
+    print("Accuracy:", accuracy_score(y_test_cls, y_pred_cls))
+    print("Precision:", precision_score(y_test_cls, y_pred_cls))
+    print("Recall:", recall_score(y_test_cls, y_pred_cls))
+    print("F1:", f1_score(y_test_cls, y_pred_cls))
+
+
+# 9. Clustering
+kmeans = KMeans(n_clusters=3, n_init=10, random_state=42) # Added random_state for reproducibility
+kmeans_labels = kmeans.fit_predict(X_scaled)
+
+dbscan = DBSCAN(eps=3, min_samples=5) # eps might need adjustment based on scaled data density
+dbscan_labels = dbscan.fit_predict(X_scaled)
+
+gmm = GaussianMixture(n_components=3, random_state=42) # Added random_state
+gmm_labels = gmm.fit_predict(X_scaled)
+
+agg = AgglomerativeClustering(n_clusters=3)
+agg_labels = agg.fit_predict(X_scaled)
+
+print("\n--- Clustering Labels ---")
+print("KMeans Labels Sample:", kmeans_labels[:5])
+print("DBSCAN Labels Sample:", dbscan_labels[:5])
+print("GMM Labels Sample:", gmm_labels[:5])
+print("Agglomerative Labels Sample:", agg_labels[:5])
+
+
+# 10. Dimensionality Reduction
+pca = PCA(n_components=10)
+X_pca = pca.fit_transform(X_scaled)
+print("\n--- Dimensionality Reduction ---")
+print("PCA transformed shape:", X_pca.shape)
+
+lda = LDA(n_components=1)
+# Ensure y_class has values for LDA, which is for supervised dimensionality reduction
+X_lda = lda.fit_transform(X_scaled, y_class)
+print("LDA transformed shape:", X_lda.shape)
+
+# TSNE is computationally intensive, limit samples for faster execution
+# Use subset for speed, ensure it's not too large for interactive sessions
+tsne = TSNE(n_components=2, random_state=42, perplexity=30, n_iter=1000) # Added random_state, common perplexity/iterations
+# Only use a subset for TSNE as it's slow, e.g., first 500 samples
+X_tsne = tsne.fit_transform(X_scaled[:500])
+print("TSNE transformed shape (subset):", X_tsne.shape)
+
+
+# 11. Basic Statistical Analysis
+# Load fresh data for statistical analysis
+train_full = pd.read_csv('/kaggle/input/house-prices-advanced-regression-techniques/train.csv')
+
+# Drop non-numeric columns before correlation
+numeric_data = train_full.select_dtypes(include=[np.number])
+
+print("\n--- Basic Statistical Analysis ---")
+print("Correlation matrix with target (SalePrice):")
+print(numeric_data.corr()['SalePrice'].sort_values(ascending=False))
